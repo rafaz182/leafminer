@@ -1,43 +1,53 @@
-#include <vector>
-#include <Arduino.h>
+#include <vector>                     // Biblioteca para usar vetores (std::vector)
+#include <Arduino.h>                  // Biblioteca principal do Arduino
 #if defined(ESP8266)
-#include <ESP8266WiFi.h>
+#include <ESP8266WiFi.h>              // Biblioteca WiFi para ESP8266
 #else
-#include <WiFi.h>
+#include <WiFi.h>                    // Biblioteca WiFi para ESP32
 #endif // ESP8266
-#include "model/configuration.h"
-#include "network.h"
-#include "utils/log.h"
-#include "leafminer.h"
-#include "current.h"
-#include "model/configuration.h"
 
-#define NETWORK_BUFFER_SIZE 2048
-#define NETWORK_TIMEOUT 1000 * 60
-#define NETWORK_DELAY 1222
-#define NETWORK_WIFI_ATTEMPTS 2
-#define NETWORK_STRATUM_ATTEMPTS 2
-#define MAX_PAYLOAD_SIZE 256
-#define MAX_PAYLOADS 10
+#include "model/configuration.h"      // Define a estrutura/configuração do minerador
+#include "network.h"                  // Declarações de funções e variáveis de rede
+#include "utils/log.h"                // Funções de log (l_info, l_error, l_debug)
+#include "leafminer.h"                // Funções específicas do LeafMiner
+#include "current.h"                  // Funções/variáveis para gerenciamento do trabalho atual
+#include "model/configuration.h"      // (Incluído novamente possivelmente por necessidade de compatibilidade)
 
+// Define constantes para o tamanho dos buffers e tempos de espera
+#define NETWORK_BUFFER_SIZE 2048      // Tamanho do buffer para leitura de dados da rede
+#define NETWORK_TIMEOUT 1000 * 60       // Tempo de timeout (em milissegundos)
+#define NETWORK_DELAY 1222              // Um delay fixo usado entre tentativas (em milissegundos)
+#define NETWORK_WIFI_ATTEMPTS 2         // Número máximo de tentativas para conectar ao WiFi
+#define NETWORK_STRATUM_ATTEMPTS 2      // Número máximo de tentativas para conectar ao host (pool)
+#define MAX_PAYLOAD_SIZE 256            // Tamanho máximo de um payload (mensagem) em bytes
+#define MAX_PAYLOADS 10                 // Número máximo de payloads que podem ser enfileirados
+
+// Cria uma instância do objeto WiFiClient para gerenciar a conexão TCP
 WiFiClient client = WiFiClient();
+
+// Define uma tag de log para identificar mensagens deste módulo
 char TAG_NETWORK[8] = "Network";
-uint64_t id = 0;
-uint64_t requestJobId = 0;
-uint8_t isRequestingJob = 0;
-uint32_t authorizeId = 0;
-uint8_t isAuthorized = 0;
+
+// Variáveis globais para gerenciamento de IDs e estado de conexão
+uint64_t id = 0;                      // Contador global para geração de IDs únicos
+uint64_t requestJobId = 0;            // ID da requisição de trabalho atual
+uint8_t isRequestingJob = 0;          // Flag indicando se já está solicitando um trabalho
+uint32_t authorizeId = 0;             // ID usado na autorização
+uint8_t isAuthorized = 0;             // Flag indicando se a autorização foi bem-sucedida
+
+// Declaração externa da configuração (definida em outro módulo)
 extern Configuration configuration;
-char payloads[MAX_PAYLOADS][MAX_PAYLOAD_SIZE]; // Array of payloads
-size_t payloads_count = 0;
+
+// Array de strings para armazenar payloads enfileirados e contador
+char payloads[MAX_PAYLOADS][MAX_PAYLOAD_SIZE]; // Armazena mensagens a serem enviadas
+size_t payloads_count = 0;            // Número de payloads atualmente enfileirados
 
 /**
- * @brief Generates the next ID for the network.
+ * @brief Gera o próximo ID para as requisições de rede.
  *
- * This function returns the next available ID for the network. If the current ID is equal to UINT64_MAX,
- * the function wraps around and returns 1. Otherwise, it increments the current ID by 1 and returns the result.
+ * Se o ID atual atingir UINT64_MAX, ele é reiniciado para 1; caso contrário, incrementa.
  *
- * @return The next ID for the network.
+ * @return O próximo ID (uint64_t).
  */
 uint64_t nextId()
 {
@@ -45,12 +55,15 @@ uint64_t nextId()
 }
 
 /**
- * Checks if the device is connected to the network.
+ * @brief Verifica se o dispositivo está conectado à rede WiFi e ao host.
  *
- * @note This function requires the configuration to be set.
+ * Se não estiver conectado, tenta reconectar ao WiFi e ao host (pool).
+ *
+ * @return 1 se conectado com sucesso, -1 em caso de falha.
  */
 short isConnected()
 {
+    // Se já estiver conectado ao WiFi e o cliente TCP estiver conectado, retorna sucesso.
     if (WiFi.status() == WL_CONNECTED && client.connected())
     {
         return 1;
@@ -58,13 +71,14 @@ short isConnected()
 
     uint16_t wifi_attemps = 0;
 
-    // check if we are already connected to WiFi
+    // Tenta conectar ao WiFi até NETWORK_WIFI_ATTEMPTS vezes.
     while (wifi_attemps < NETWORK_WIFI_ATTEMPTS)
     {
         l_info(TAG_NETWORK, "Connecting to %s...", configuration.wifi_ssid.c_str());
         WiFi.begin(configuration.wifi_ssid.c_str(), configuration.wifi_password.c_str());
         wifi_attemps++;
         delay(500);
+        // Se a conexão for bem-sucedida, sai do loop.
         if (WiFi.waitForConnectResult() == WL_CONNECTED)
         {
             break;
@@ -72,19 +86,21 @@ short isConnected()
         delay(1500);
     }
 
+    // Se mesmo após as tentativas não estiver conectado, exibe erro e retorna -1.
     if (WiFi.waitForConnectResult() != WL_CONNECTED)
     {
         l_error(TAG_NETWORK, "Unable to connect to WiFi");
         return -1;
     }
 
+    // Conexão WiFi estabelecida. Loga informações de rede.
     l_info(TAG_NETWORK, "Connected to WiFi");
     l_info(TAG_NETWORK, "IP address: %s", WiFi.localIP().toString().c_str());
     l_info(TAG_NETWORK, "MAC address: %s", WiFi.macAddress().c_str());
 
     uint16_t wifi_stratum = 0;
 
-    // and we are connected to the host
+    // Tenta conectar ao host (pool) com NETWORK_STRATUM_ATTEMPTS tentativas.
     while (wifi_stratum < NETWORK_STRATUM_ATTEMPTS)
     {
         l_debug(TAG_NETWORK, "Connecting to host %s...", configuration.pool_url.c_str());
@@ -98,6 +114,7 @@ short isConnected()
         delay(1000);
     }
 
+    // Se não conseguir conectar ao host, retorna erro.
     if (!client.connected())
     {
         l_error(TAG_NETWORK, "Unable to connect to host");
@@ -108,59 +125,72 @@ short isConnected()
 }
 
 /**
- * Sends a request to the server with the specified payload.
+ * @brief Envia um payload (mensagem) para o servidor.
  *
- * @param payload The payload to send to the server.
+ * A função envia o payload pela conexão TCP e registra a mensagem enviada via log.
+ *
+ * @param payload A mensagem (payload) a ser enviada.
  */
 void request(const char *payload)
 {
-    client.print(payload);
-    l_info(TAG_NETWORK, ">>> %s", payload);
+    client.print(payload);               // Envia o payload através do cliente TCP
+    l_info(TAG_NETWORK, ">>> %s", payload); // Loga a mensagem enviada
 }
 
 /**
- * Authorizes the network connection by sending a request with the appropriate payload.
+ * @brief Autoriza a conexão com o pool de mineração.
+ *
+ * Constrói uma mensagem JSON para autorização e envia para o pool.
  */
 void authorize()
 {
     char payload[1024];
-    uint64_t next_id = nextId();
-    isAuthorized = 0;
-    authorizeId = next_id;
-    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.authorize\",\"params\":[\"%s\",\"%s\"]}\n", next_id, configuration.wallet_address.c_str(), configuration.pool_password.c_str());
-    request(payload);
+    uint64_t next_id = nextId();         // Gera o próximo ID para a requisição
+    isAuthorized = 0;                    // Reseta a flag de autorização
+    authorizeId = next_id;               // Armazena o ID usado para autorização
+    // Monta a mensagem JSON de autorização
+    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.authorize\",\"params\":[\"%s\",\"%s\"]}\n", 
+            next_id, 
+            configuration.wallet_address.c_str(), 
+            configuration.pool_password.c_str());
+    request(payload);                    // Envia a mensagem
 }
 
 /**
- * Subscribes to the mining service.
- * Generates a payload with the subscription details and sends it as a request.
+ * @brief Inscreve o minerador no pool de mineração.
+ *
+ * Constrói uma mensagem JSON para inscrição (subscribe) e envia-a.
  */
 void subscribe()
 {
     char payload[1024];
-    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.subscribe\",\"params\":[\"LeafMiner/%s\", null]}\n", nextId(), _VERSION);
-    request(payload);
+    // Monta a mensagem JSON para subscribe usando a versão do software (_VERSION)
+    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.subscribe\",\"params\":[\"LeafMiner/%s\", null]}\n", 
+            nextId(), _VERSION);
+    request(payload);                    // Envia a mensagem
 }
 
 /**
- * Suggests the mining difficulty for the network.
- * This function generates a payload string with the necessary data and sends it as a request.
+ * @brief Sugere a dificuldade de mineração para o pool.
+ *
+ * Constrói uma mensagem JSON para sugerir a dificuldade (mining.suggest_difficulty).
  */
 void difficulty()
 {
     char payload[1024];
-    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.suggest_difficulty\",\"params\":[%f]}\n", nextId(), DIFFICULTY);
-    request(payload);
+    // Monta a mensagem JSON passando a dificuldade (valor double)
+    sprintf(payload, "{\"id\":%llu,\"method\":\"mining.suggest_difficulty\",\"params\":[%f]}\n", 
+            nextId(), DIFFICULTY);
+    request(payload);                    // Envia a mensagem
 }
 
 /**
- * Determines the response type based on the provided JSON document.
+ * @brief Determina o tipo de resposta recebido do pool.
  *
- * @param doc The JSON document to analyze.
- * @return The response type as a const char*.
- *         Possible values are "subscribe", the value of the "method" key,
- *         "mining.submit" if the "result" key is true, "mining.submit.fail" if the "result" key is false,
- *         or "unknown" if none of the above conditions are met.
+ * Analisa o objeto JSON e retorna uma string representando o tipo de resposta.
+ *
+ * @param json O objeto cJSON que representa a resposta.
+ * @return Uma string com o tipo de resposta (ex.: "subscribe", "mining.notify", etc.)
  */
 const char *responseType(cJSON *json)
 {
@@ -173,29 +203,30 @@ const char *responseType(cJSON *json)
             const cJSON *item00 = cJSON_GetArrayItem(item0, 0);
             if (item00 != NULL && cJSON_IsArray(item00) && cJSON_GetArraySize(item00) > 0)
             {
-                return "subscribe";
+                return "subscribe";         // Identifica resposta de inscrição
             }
         }
     }
     else if (cJSON_HasObjectItem(json, "method"))
     {
+        // Se existir a chave "method", retorna seu valor
         return cJSON_GetStringValue(cJSON_GetObjectItem(json, "method"));
     }
     else if (cJSON_HasObjectItem(json, "result"))
     {
         const cJSON *result = cJSON_GetObjectItem(json, "result");
+        // Verifica se o ID da mensagem corresponde ao authorizeId para identificar autorização
         if (authorizeId == cJSON_GetNumberValue(cJSON_GetObjectItem(json, "id")))
         {
             return "authorized";
         }
         if (cJSON_IsTrue(result))
         {
-            return "mining.submit";
+            return "mining.submit";       // Resposta positiva para um share submetido
         }
         else
         {
-            // we consider a fail when the error code is 21
-            // aka "Job not found"
+            // Se o erro é "Job not found" (código 21), identifica como falha na submissão
             if (cJSON_GetNumberValue(cJSON_GetArrayItem(cJSON_GetObjectItem(json, "error"), 0)) == 21)
             {
                 return "mining.submit.fail";
@@ -211,15 +242,15 @@ const char *responseType(cJSON *json)
         }
     }
 
-    return "unknown";
+    return "unknown";                   // Caso não se encaixe em nenhum tipo conhecido
 }
 
 /**
- * @brief Handles the response received from the network.
+ * @brief Processa a resposta recebida do pool.
  *
- * This function parses the response JSON and performs different actions based on the response type.
- * The response type determines how the response data is processed and stored.
+ * Faz o parse do JSON e executa ações conforme o tipo de resposta.
  *
+ * @param r A resposta recebida (std::string).
  */
 void response(std::string r)
 {
@@ -229,6 +260,7 @@ void response(std::string r)
 
     if (strcmp(type, "subscribe") == 0)
     {
+        // Trata a resposta de inscrição (subscribe)
         const cJSON *result = cJSON_GetObjectItem(json, "result");
         if (cJSON_IsArray(result) && cJSON_IsArray(cJSON_GetArrayItem(result, 0)) &&
             cJSON_IsArray(cJSON_GetArrayItem(cJSON_GetArrayItem(result, 0), 0)))
@@ -242,6 +274,7 @@ void response(std::string r)
                 std::string subscribeId = subscribeIdJson->valuestring;
                 std::string extranonce1 = extranonce1Json->valuestring;
                 int extranonce2_size = extranonce2SizeJson->valueint;
+                // Cria um novo objeto Subscribe com os valores recebidos
                 Subscribe *subscribe = new Subscribe(subscribeId, extranonce1, extranonce2_size);
                 current_setSubscribe(subscribe);
             }
@@ -249,11 +282,11 @@ void response(std::string r)
     }
     else if (strcmp(type, "mining.notify") == 0)
     {
-
+        // Trata a notificação de novo trabalho (job) para mineração
         cJSON *params = cJSON_GetObjectItem(json, "params");
         std::string job_id = cJSON_GetArrayItem(params, 0)->valuestring;
 
-        // fail fast check if job_id is the same as the current job
+        // Verifica se o job recebido é igual ao job atual para evitar processamento duplicado
         if (current_hasJob() && strcmp(current_job->job_id.c_str(), job_id.c_str()) == 0)
         {
             l_error(TAG_NETWORK, "Job is the same as the current one");
@@ -262,6 +295,7 @@ void response(std::string r)
 
         if (cJSON_IsArray(params) && cJSON_GetArraySize(params) == 9)
         {
+            // Extrai os parâmetros do novo trabalho
             std::string prevhash = cJSON_GetArrayItem(params, 1)->valuestring;
             std::string coinb1 = cJSON_GetArrayItem(params, 2)->valuestring;
             std::string coinb2 = cJSON_GetArrayItem(params, 3)->valuestring;
@@ -271,6 +305,7 @@ void response(std::string r)
             std::string ntime = cJSON_GetArrayItem(params, 7)->valuestring;
             bool clean_jobs = cJSON_GetArrayItem(params, 8)->valueint == 1;
 
+            // Converte o merkle branch para um vetor de strings
             std::vector<std::string> merkleBranchStrings;
             int merkleBranchSize = cJSON_GetArraySize(merkle_branch);
             for (int i = 0; i < merkleBranchSize; ++i)
@@ -279,12 +314,14 @@ void response(std::string r)
             }
             requestJobId = nextId();
 
+            // Define o novo job atual com os dados recebidos
             current_setJob(Notification(job_id, prevhash, coinb1, coinb2, merkleBranchStrings, version, nbits, ntime, clean_jobs));
             isRequestingJob = 0;
         }
     }
     else if (strcmp(type, "mining.set_difficulty") == 0)
     {
+        // Trata a mensagem para alterar a dificuldade de mineração
         const cJSON *paramsArray = cJSON_GetObjectItem(json, "params");
         if (cJSON_IsArray(paramsArray) && cJSON_GetArraySize(paramsArray) == 1)
         {
@@ -299,24 +336,28 @@ void response(std::string r)
     }
     else if (strcmp(type, "authorized") == 0)
     {
+        // Se a resposta indicar autorização, registra o sucesso
         l_info(TAG_NETWORK, "Authorized");
         isAuthorized = 1;
     }
     else if (strcmp(type, "mining.submit") == 0)
     {
+        // Se um share submetido foi aceito
         l_info(TAG_NETWORK, "Share accepted");
         current_increment_hash_accepted();
     }
     else if (strcmp(type, "mining.submit.difficulty_too_low") == 0)
     {
+        // Se o share foi rejeitado por dificuldade baixa
         l_error(TAG_NETWORK, "Share rejected due to low difficulty");
         current_increment_hash_rejected();
     }
     else if (strcmp(type, "mining.submit.fail") == 0)
     {
+        // Se o share foi rejeitado
         l_error(TAG_NETWORK, "Share rejected");
 
-        // prevent the current from requesting a new job, being old responses
+        // Se a resposta veio com um ID menor que o do requestJobId, ignora a resposta tardia
         if ((uint64_t)cJSON_GetObjectItem(json, "id")->valueint < requestJobId)
         {
             l_error(TAG_NETWORK, "Late responses, skip them");
@@ -339,12 +380,23 @@ void response(std::string r)
     }
     else
     {
+        // Se o tipo de resposta não for reconhecido, registra erro
         l_error(TAG_NETWORK, "Unknown response type: %s", type);
     }
+    // Libera o objeto JSON para evitar vazamento de memória
     cJSON_Delete(json);
+    // Limpa a string de resposta
     r.clear();
 }
 
+/**
+ * @brief Solicita um novo trabalho (job) para mineração.
+ *
+ * Se já houver um job válido ou uma requisição em andamento, não solicita novamente.
+ * Se não estiver conectado, reinicia a sessão.
+ *
+ * @return 1 se a requisição foi iniciada, -1 em caso de falha.
+ */
 short network_getJob()
 {
     if (current_job_is_valid == 1)
@@ -361,12 +413,14 @@ short network_getJob()
 
     isRequestingJob = 1;
 
+    // Se não conseguir conectar à rede, reseta a sessão e retorna erro
     if (isConnected() == -1)
     {
         current_resetSession();
         return -1;
     }
 
+    // Se não houver uma sessão ativa, faz subscribe, authorize e define a dificuldade
     if (current_getSessionId() == nullptr)
     {
         subscribe();
@@ -377,10 +431,18 @@ short network_getJob()
     return 1;
 }
 
+/**
+ * @brief Enfileira um payload para envio posterior.
+ *
+ * Se a fila não estiver cheia, copia o payload para o array e incrementa o contador.
+ *
+ * @param payload A mensagem a ser enfileirada.
+ */
 void enqueue(const char *payload)
 {
     if (payloads_count < MAX_PAYLOADS)
     {
+        // Copia o payload para a posição atual da fila, garantindo o tamanho máximo
         strncpy(payloads[payloads_count], payload, MAX_PAYLOAD_SIZE - 1);
         payloads_count++;
         l_debug(TAG_NETWORK, "Payload queued: %s", payload);
@@ -391,32 +453,55 @@ void enqueue(const char *payload)
     }
 }
 
+/**
+ * @brief Envia uma submissão de share para o pool.
+ *
+ * Constrói um payload JSON para enviar o share (resultado da mineração) e o envia.
+ *
+ * @param job_id ID do trabalho atual.
+ * @param extranonce2 Valor extranonce2.
+ * @param ntime Tempo no formato ntime.
+ * @param nonce O nonce encontrado.
+ */
 void network_send(const std::string &job_id, const std::string &extranonce2, const std::string &ntime, const uint32_t &nonce)
 {
     char payload[MAX_PAYLOAD_SIZE];
-    snprintf(payload, sizeof(payload), "{\"id\":%llu,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%08x\"]}\n", nextId(), configuration.wallet_address.c_str(), job_id.c_str(), extranonce2.c_str(), ntime.c_str(), nonce);
+    // Monta o payload JSON para submissão de share
+    snprintf(payload, sizeof(payload), "{\"id\":%llu,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%08x\"]}\n", 
+             nextId(), 
+             configuration.wallet_address.c_str(), 
+             job_id.c_str(), 
+             extranonce2.c_str(), 
+             ntime.c_str(), 
+             nonce);
 #if defined(ESP8266)
-    request(payload);
-    network_listen();
+    request(payload);       // Envia o payload
+    network_listen();       // Escuta a resposta imediatamente (modo ESP8266)
 #else
-    enqueue(payload);
+    enqueue(payload);       // Para ESP32, enfileira o payload para envio posterior
 #endif
 }
 
+/**
+ * @brief Escuta as mensagens da rede.
+ *
+ * Lê dados do cliente até encontrar uma nova linha ('\n') e processa a resposta.
+ */
 void network_listen()
 {
-    uint32_t start_time = millis();
+    uint32_t start_time = millis();  // Marca o tempo de início
     uint32_t len = 0;
 
+    // Se não estiver conectado, reseta a sessão
     if (isConnected() == -1)
     {
         current_resetSession();
-        return; // Handle connection failure
+        return; // Trata a falha na conexão
     }
 
     do
     {
-        // Check if 5 seconds have elapsed
+        // Se mais de 5 segundos se passaram, sai do loop
         if (millis() - start_time > 5000)
         {
             l_debug(TAG_NETWORK, "Timeout occurred. Exiting network_listen loop.");
@@ -424,33 +509,42 @@ void network_listen()
         }
 
         char data[NETWORK_BUFFER_SIZE];
+        // Lê dados do cliente até encontrar '\n' ou atingir o tamanho do buffer
         len = client.readBytesUntil('\n', data, sizeof(data) - 1);
         l_debug(TAG_NETWORK, "<<< len: %d", len);
-        data[len] = '\0';
+        data[len] = '\0';  // Termina a string
         if (data[0] != '\0')
         {
+            // Processa a resposta recebida
             response(data);
         }
 
     } while (len > 0);
 }
 
+/**
+ * @brief Envia um payload e, em seguida, o remove da fila.
+ *
+ * Após enviar o payload, percorre a fila de payloads e remove aquele que foi enviado.
+ *
+ * @param payload A mensagem a ser enviada.
+ */
 void network_submit(const char *payload)
 {
     if (isConnected() == -1)
     {
         current_resetSession();
-        return; // Handle connection failure
+        return; // Trata a falha na conexão
     }
 
     request(payload);
 
-    // Remove the submitted payload from the array
+    // Remove o payload enviado da fila (shift dos demais elementos)
     for (size_t i = 0; i < payloads_count; ++i)
     {
         if (strcmp(payloads[i], payload) == 0)
         {
-            // Shift remaining payloads
+            // Move os payloads seguintes para ocupar o lugar do removido
             for (size_t j = i; j < payloads_count - 1; ++j)
             {
                 strcpy(payloads[j], payloads[j + 1]);
@@ -461,6 +555,9 @@ void network_submit(const char *payload)
     }
 }
 
+/**
+ * @brief Envia todos os payloads enfileirados.
+ */
 void network_submit_all()
 {
     for (size_t i = 0; i < payloads_count; ++i)
@@ -470,13 +567,22 @@ void network_submit_all()
 }
 
 #if defined(ESP32)
+// Define um timeout para a tarefa de rede
 #define NETWORK_TASK_TIMEOUT 100
+/**
+ * @brief Função de tarefa para gerenciamento de rede no ESP32.
+ *
+ * Em loop, envia todos os payloads enfileirados e escuta as respostas, com um delay fixo entre as iterações.
+ *
+ * @param pvParameters Parâmetros da tarefa (não utilizado aqui).
+ */
 void networkTaskFunction(void *pvParameters)
 {
     while (1)
     {
-        network_submit_all();
-        network_listen();
+        network_submit_all();  // Tenta enviar todos os payloads pendentes
+        network_listen();      // Escuta as respostas do pool
+        // Delay para evitar saturar a CPU, convertido para ticks do FreeRTOS
         vTaskDelay(NETWORK_TASK_TIMEOUT / portTICK_PERIOD_MS);
     }
 }

@@ -15,6 +15,11 @@
 
 #include "nerdSHA256plus.h"
 
+/**
+ * – Um array de 64 constantes de 32 bits (K[64]).
+ * – Esses valores são os “números mágicos” definidos pelo padrão SHA‑256 e são usados em 
+ * cada uma das 64 rodadas do algoritmo de compressão.
+ */
 MEM_ATTR static const uint32_t K[64] = {
     0x428A2F98L, 0x71374491L, 0xB5C0FBCFL, 0xE9B5DBA5L, 0x3956C25BL,
     0x59F111F1L, 0x923F82A4L, 0xAB1C5ED5L, 0xD807AA98L, 0x12835B01L,
@@ -30,10 +35,109 @@ MEM_ATTR static const uint32_t K[64] = {
     0x682E6FF3L, 0x748F82EEL, 0x78A5636FL, 0x84C87814L, 0x8CC70208L,
     0x90BEFFFAL, 0xA4506CEBL, 0xBEF9A3F7L, 0xC67178F2L};
 
+/**
+ * Realiza uma rotação à direita de um número de 32 bits. 
+ * Essa operação é fundamental no SHA‑256.
+ * 
+ * A rotação à direita é uma operação de manipulação de bits que "gira" os bits de um número 
+ * para a direita, de forma circular. Isso significa que, quando você desloca todos os bits 
+ * para a direita, os bits que "saem" pela extremidade direita são reinseridos na extremidade 
+ * esquerda.
+ * 
+ * Por exemplo, suponha um número de 8 bits representado como:
+ * 
+ *   A B C D E F G H
+ * 
+ * Se realizarmos uma rotação à direita de 3 posições, os três bits mais à direita (F, G, H) 
+ * serão movidos para a esquerda, e o restante será deslocado para a direita. O resultado 
+ * será:
+ *   F G H A B C D E
+ * 
+ * Diferente de um shift lógico, em que os bits que saem são descartados e zeros são inseridos,
+ * a rotação mantém todos os bits do número, apenas alterando sua posição. Essa operação é 
+ * fundamental no SHA‑256 porque ela ajuda a misturar os bits de maneira não-linear, 
+ * contribuindo para o efeito avalanche (ou seja, pequenas mudanças na entrada geram 
+ * grandes mudanças na saída).
+ * 
+ * Vamos detalhar a expressão:
+ * 
+ *   x << ((sizeof(x) << 3) - n)
+ * 
+ * Passo a passo:
+ * 
+ *     sizeof(x):
+ *       – Retorna o tamanho de x em bytes.
+ *       – Para um uint32_t, sizeof(x) é 4.
+ * 
+ *     (sizeof(x) << 3):
+ *       – O operador << 3 desloca à esquerda o valor de sizeof(x) por 3 bits.
+ *       – Deslocar um número à esquerda por 3 bits é equivalente a multiplicar esse número por 2³, ou seja, por 8.
+ *       – Então, (4 << 3) equivale a 4 * 8 = 32.
+ *       – Esse valor (32) representa o número total de bits em um uint32_t.
+ * 
+ *     ((sizeof(x) << 3) - n):
+ *       – Aqui, subtraímos n (o número de bits que queremos rotacionar) de 32.
+ *       – Por exemplo, se n for 8, teremos 32 - 8 = 24.
+ * 
+ *     x << ((sizeof(x) << 3) - n):
+ *       – Agora, deslocamos o valor de x para a esquerda por (32 - n) bits.
+ *       – Esse deslocamento move os bits que “saíram” do lado direito quando fizemos x >> n de volta para as posições mais à esquerda.
+ *       – No exemplo com n = 8, x << 24 desloca x para a esquerda por 24 bits, de modo que os 8 bits menos significativos de x (que seriam "perdidos" no shift direito) acabam voltando para as posições mais altas.
+ * 
+ * Em resumo, essa parte da função ROTR pega os bits que foram "deslocados para fora" na 
+ * operação x >> n e os recoloca nas posições de maior peso, completando a rotação de forma 
+ * circular. Assim, a rotação à direita é implementada como a combinação de:
+ * 
+ *     x >> n  – desloca os bits para a direita, e
+ *     x << (total_bits - n) – recoloca os bits que saíram para a esquerda.
+ * 
+ * Por fim, o operador OR (|) junta os dois resultados, obtendo a rotação completa.
+ */
 inline uint32_t ROTR(uint32_t x, uint32_t n)
 {
     return ((x >> n) | (x << ((sizeof(x) << 3) - n)));
 }
+
+/**
+ *  Essa função serve para converter um número de 32 bits em sua representação em bytes 
+ * (big-endian) e armazená-los em um array. Vamos detalhar linha por linha:
+ *     Parâmetros:
+ *      – n é um número de 32 bits que queremos "quebrar" em 4 bytes.
+ *      – b é um ponteiro para um array de bytes onde os resultados serão armazenados.
+ *      – i é o índice no array b onde começará a escrita dos 4 bytes.
+ * 
+ *     Linha 1:
+ *       (b)[(i)] = (uint8_t)((n) >> 24);
+ *      – Aqui, deslocamos o número n 24 bits para a direita.
+ *      – Isso extrai o byte mais significativo (os 8 bits mais à esquerda) de n.
+ *      – Em seguida, convertemos para um uint8_t (garantindo que só os 8 bits relevantes sejam usados) e armazenamos em b[i].
+ * 
+ *     Linha 2:
+ *       (b)[(i) + 1] = (uint8_t)((n) >> 16);
+ *      – Agora, deslocamos n 16 bits para a direita.
+ *      – Isso traz para os 8 bits menos significativos os 2º byte mais significativo de n.
+ *      – O resultado é armazenado em b[i + 1].
+ * 
+ *     Linha 3:
+ *       (b)[(i) + 2] = (uint8_t)((n) >> 8);
+ *      – Deslocamos n 8 bits para a direita, fazendo com que o 3º byte mais significativo fique nos 8 bits menos significativos.
+ *      – Armazenamos esse valor em b[i + 2].
+ * 
+ *     Linha 4:
+ *       (b)[(i) + 3] = (uint8_t)((n));
+ *      – Aqui, não há deslocamento: pegamos os 8 bits menos significativos de n (o 4º byte) e armazenamos em b[i + 3].
+ * 
+ * Em resumo:
+ *  A função divide o número n em 4 bytes, de forma que:
+ *     b[i] recebe o byte mais significativo (parte alta do número).
+ *     b[i+1] recebe o segundo byte.
+ *     b[i+2] recebe o terceiro byte.
+ *     b[i+3] recebe o byte menos significativo (parte baixa).
+ * 
+ * Isso é conhecido como representação big-endian, onde o byte mais significativo vem primeiro
+ * (endereço de memória mais baixo). Essa conversão é fundamental em muitas operações de 
+ * criptografia e protocolos de rede, onde a ordem dos bytes precisa ser padronizada.
+ */
 inline void PUT_UINT32_BE(uint32_t n, uint8_t *b, uint32_t i)
 {
     (b)[(i)] = (uint8_t)((n) >> 24);
@@ -41,14 +145,73 @@ inline void PUT_UINT32_BE(uint32_t n, uint8_t *b, uint32_t i)
     (b)[(i) + 2] = (uint8_t)((n) >> 8);
     (b)[(i) + 3] = (uint8_t)((n));
 }
+
+/**
+ * Pega um array de valores em big-endian e unificar num valor final
+ * 
+ * Exemplo Prático
+ * Se o array b contém os seguintes bytes:
+ *     b[i] = 0x12
+ *     b[i+1] = 0x34
+ *     b[i+2] = 0x56
+ *     b[i+3] = 0x78
+ * 
+ * A função fará o seguinte:
+ * 
+ *     (uint32_t)(0x12) << 24 → 0x12000000
+ *     (uint32_t)(0x34) << 16 → 0x00340000
+ *     (uint32_t)(0x56) << 8 → 0x00005600
+ *     (uint32_t)(0x78) → 0x00000078
+ * 
+ * Quando esses valores são combinados com OR:
+ * 
+ *   0x12000000 | 0x00340000 | 0x00005600 | 0x00000078 = 0x12345678
+ * 
+ * Portanto, a função retorna 0x12345678, que é o número de 32 bits reconstruído a partir 
+ * dos 4 bytes em ordem big-endian.
+ */
 inline uint32_t GET_UINT32_BE(const uint8_t *b, uint32_t i)
 {
     return (((uint32_t)(b)[(i)] << 24) | ((uint32_t)(b)[(i) + 1] << 16) | ((uint32_t)(b)[(i) + 2] << 8) | ((uint32_t)(b)[(i) + 3]));
 }
+
+/**
+ * Realiza uma operação de deslocamento lógico à direita (shift right).
+ * 
+ * Exemplo Prático
+ * 
+ * Considere:
+ * 
+ *   x = 0x12345678
+ *   n = 4
+ * 
+ * Vamos aplicar a operação:
+ * 
+ *     Conversão e Garantia de 32 bits:
+ *       (x & 0xFFFFFFFF) mantém o valor 0x12345678, já que x já tem 32 bits.
+ * 
+ *     Deslocamento à direita (x >> n):
+ *       Deslocar 0x12345678 4 bits à direita equivale a dividir o valor por 2⁴ (ou 16) e descartar os bits "sobrando" à direita. Em termos hexadecimais, deslocar 4 bits equivale a "mover" cada dígito hexadecimal para a direita por uma posição.
+ * 
+ *         O valor original em hexadecimal é:
+ *            0x12 34 56 78
+ * 
+ *         Deslocando 4 bits (1 dígito hexadecimal) à direita, obtemos:
+ *            0x01 23 45 67
+
+    Resultado:
+      Portanto, SHR(0x12345678, 4) retorna 0x01234567.
+ */
 inline uint32_t SHR(uint32_t x, uint32_t n)
 {
     return ((x & 0xFFFFFFFF) >> n);
 }
+
+/**
+ * S0, S1, S2, S3: Implementam as funções de “sigma” definidas pelo padrão SHA‑256. 
+ * Estas funções realizam rotações e deslocamentos e são cruciais para a “difusão” 
+ * dos bits durante a compressão.
+ */
 inline uint32_t S0(uint32_t x)
 {
     return (ROTR(x, 7) ^ ROTR(x, 18) ^ SHR(x, 3));
@@ -66,11 +229,25 @@ inline uint32_t S3(uint32_t x)
     return (ROTR(x, 6) ^ ROTR(x, 11) ^ ROTR(x, 25));
 }
 
+/**
+ * F0 e F1: São macros que implementam funções de escolha (choose) e maioria (majority) – funções 
+ * não lineares que combinam os bits dos estados intermediários de forma a introduzir não 
+ * linearidade, uma característica essencial em funções hash criptográficas.
+ */
 #define F0(x, y, z) ((x & y) | (z & (x | y)))
 #define F1(x, y, z) (z ^ (x & (y ^ z)))
 
+/**
+ * Macro R: É usada para estender o bloco de 16 palavras (inicialmente carregadas a partir do 
+ * bloco de entrada) para as 64 palavras necessárias nas 64 rodadas do SHA‑256.
+ */
 #define R(t) (W[t] = S1(W[t - 2]) + W[t - 7] + S0(W[t - 15]) + W[t - 16])
 
+/**
+ * Representa uma rodada de compressão do SHA‑256. Ela combina os valores dos oito registradores 
+ * (A, B, C, D, E, F, G, H) com uma palavra do bloco expandido e uma constante K, realizando 
+ * as operações de rotação, soma e funções não lineares conforme o padrão do SHA‑256.
+ */
 #define P(a, b, c, d, e, f, g, h, x, K)          \
     {                                            \
         temp1 = h + S3(e) + F1(e, f, g) + K + x; \

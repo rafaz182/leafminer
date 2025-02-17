@@ -12,15 +12,36 @@ char TAG_MINER[] = "Miner";
 
 void miner(uint32_t core)
 {
+
+    if (!current_job_is_valid || current_job == nullptr) {
+        delay(100);
+        return;
+    }
+
     double diff_hash = 0;
     uint32_t winning_nonce = 0;
     uint8_t hash[SHA256M_BLOCK_SIZE];
 
+    std::string job_id;  // Cache o job_id
+    try {
+        job_id = current_job->job_id;  // Cache no início para evitar acesso durante o loop
+    } catch (...) {
+        l_error(TAG_MINER, "[%d] > Error accessing job_id", core);
+        return;
+    }
+
+
     while (current_job_is_valid)
     {
-#if defined(ESP8266)
-        ESP.wdtFeed();
-#endif
+        #if defined(ESP8266)
+                ESP.wdtFeed();
+        #endif
+        
+        if (!current_job) {
+            delay(100);  // Pequeno delay para não sobrecarregar o sistema
+            return;
+        }
+
         current_increment_hashes();
 
         if (!current_job->pickaxe(core, hash, winning_nonce))
@@ -37,11 +58,16 @@ void miner(uint32_t core)
         current_update_hashrate();
     }
 
-#if defined(HAS_LCD)
-    screen_loop();
-#endif // HAS_LCD
+        #if defined(HAS_LCD)
+            screen_loop();
+        #endif // HAS_LCD
 
-    l_info(TAG_MINER, "[%d] > [%s] > 0x%.8x - diff %.12f", core, current_job->job_id.c_str(), winning_nonce, diff_hash);
+        if (current_job_is_valid && current_job != nullptr) {  // Verifique novamente
+            l_info(TAG_MINER, "[%d] > [%s] > 0x%.8x - diff %.12f", 
+                core, job_id.c_str(), winning_nonce, diff_hash);
+            network_send(job_id, current_job->extranonce2, current_job->ntime, winning_nonce);
+        }
+
     network_send(current_job->job_id, current_job->extranonce2, current_job->ntime, winning_nonce);
 
     current_setHighestDifficulty(diff_hash);

@@ -9,7 +9,7 @@ char TAG_CURRENT[] = "Current";
 // Global variables
 Job *current_job = nullptr;
 Subscribe *current_subscribe = nullptr;
-uint16_t current_job_is_valid = 0;
+volatile bool current_job_is_valid = false;  // Mude para bool e volatile
 uint64_t current_job_processed = 0;
 double current_difficulty = UINT_MAX;
 double current_difficulty_highest = 0.0;
@@ -49,24 +49,29 @@ void current_setJob(const Notification &notification)
             return;
         }
 
-        if (notification.clean_jobs)
+        current_job_is_valid = false;  // Desabilita primeiro
+        
+        Job* new_job = new Job(notification, *current_subscribe, current_difficulty);
+        
+        if (current_job != nullptr)
         {
-            current_job_is_valid = 0;
-            if (current_job != nullptr)
+            if (notification.clean_jobs)
             {
-                l_debug(TAG_CURRENT, "Job: %s is cleaned and replaced with %s", current_job->job_id.c_str(), notification.job_id.c_str());
+                l_debug(TAG_CURRENT, "Job: %s is cleaned and replaced with %s", 
+                    current_job->job_id.c_str(), 
+                    notification.job_id.c_str());
             }
+            deleteCurrentJob();
         }
 
-        deleteCurrentJob();
-
-        current_job = new Job(notification, *current_subscribe, current_difficulty);
-        current_job_is_valid = 1;
+        current_job = new_job;
+        current_job_is_valid = true;  // Habilita só depois que tudo estiver pronto
         current_increment_processedJob();
         l_info(TAG_CURRENT, "Job: %s ready to be mined", current_job->job_id.c_str());
     }
     catch (...)
     {
+        current_job_is_valid = false;
         handleException();
     }
 }

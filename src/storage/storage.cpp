@@ -29,14 +29,14 @@ void storage_save(const Configuration &conf)
 
 void storage_load(Configuration *conf)
 {
-    conf->wifi_ssid = preferences.getString("wifi_ssid", "").c_str();
-    conf->wifi_password = preferences.getString("wifi_password", "").c_str();
-    conf->wallet_address = preferences.getString("wallet_address", "").c_str();
-    conf->pool_password = preferences.getString("pool_password", "").c_str();
-    conf->pool_url = preferences.getString("pool_url", "pool.vkbit.com").c_str();
-    conf->pool_port = preferences.getUInt("pool_port", 3333);
+    conf->wifi_ssid = preferences.getString("wifi_ssid", "AP 803").c_str();
+    conf->wifi_password = preferences.getString("wifi_password", "rafaz01053").c_str();
+    conf->wallet_address = preferences.getString("wallet_address", "bc1q4kagj74fgtkfnkym0fr8cppvd6uv7jrplt4xg7").c_str();
+    conf->pool_password = "x";//preferences.getString("pool_password", "x").c_str();
+    conf->pool_url = "pool.nerdminer.io";//preferences.getString("pool_url", "public-pool.io").c_str();
+    conf->pool_port = (u_int32_t)3333;//preferences.getUInt("pool_port", 21496);
     conf->blink_enabled = preferences.getString("blink_enabled", "on").c_str();
     conf->blink_brightness = preferences.getUInt("blink_bright", 256);
     conf->lcd_on_start = preferences.getString("lcd_on_start", "on").c_str();
-    conf->auto_update = preferences.getString("auto_update", "on").c_str();
+    conf->auto_update = "off";//preferences.getString("auto_update", "on").c_str();
 }
